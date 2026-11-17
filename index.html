@@ -213,6 +213,13 @@ html,body{overscroll-behavior-x:none}
 .schip.off{opacity:.45;box-shadow:none;background:var(--card2);text-decoration:line-through}
 .schip.off i{background:transparent!important;border:2px solid var(--muted);width:7px;height:7px}
 .hidnote{font-size:12.5px;color:var(--muted);font-weight:600;margin:-4px 4px 10px}.hidnote a{cursor:pointer}
+.carry{background:var(--green-soft);border-radius:16px;padding:14px;margin-top:14px}
+.carry.neg{background:var(--amber-soft)}
+.carry-top{display:flex;gap:10px;align-items:flex-start;margin-bottom:10px}.carry-top b{font-size:14.5px}
+.carry-ico{font-size:22px;line-height:1}
+.carry .formsel{background:var(--card);font-weight:700}
+.carry-ok{font-size:12.5px;font-weight:700;color:var(--green);margin-top:10px}
+.carried-note{font-size:12.5px;font-weight:600;color:var(--accent);margin:-2px 0 6px}
 .xbtn{background:var(--card2);border:none;color:var(--muted);width:34px;height:34px;border-radius:10px;font-size:20px;cursor:pointer;flex:none}
 a{color:var(--accent);font-weight:600}
 </style>
@@ -887,7 +894,14 @@ function doDelete(id) { closeModal(); mutate('deleteBill', [id], () => { S.bills
 const pcWho = pc => pc && pc.readOnly ? esc(personName(pc.owner)) + "'s " : '';
 const plannedOn = (billId, month, exceptId) => S.paychecks.find(pc => pc.id !== exceptId &&
   pc.allocations.some(a => a.type === 'bill' && a.billId === billId && a.month === month));
-const pcTotals = pc => { const planned = pc.allocations.reduce((s, a) => s + num(a.amount), 0); return {planned, left: num(pc.amount) - planned}; };
+// Money moved from one paycheck into a later one ("carried over")
+const r2 = n => Math.round(n * 100) / 100;
+const carriedOut = (pc, exceptId) => pc.id ? myPaychecks().filter(p => p.carryFrom === pc.id && p.id !== exceptId && p.id !== pc.id).reduce((s, p) => s + num(p.carryOver), 0) : 0;
+const pcTotals = (pc, exceptId) => {
+  const planned = pc.allocations.reduce((s, a) => s + num(a.amount), 0);
+  const avail = num(pc.amount) + num(pc.carryOver), out = carriedOut(pc, exceptId);
+  return {planned, avail, out, left: r2(avail - planned - out)};
+};
 const allocPaid = a => a.type === 'bill' && !!payFor(a.billId, a.month);
 
 function renderPay() {
@@ -959,20 +973,24 @@ function pcTick(billId, key, amount, pcDate) {
 }
 
 function pcCard(pc, hl) {
-  const {planned, left} = pcTotals(pc);
+  const {planned, avail, out, left} = pcTotals(pc);
   const unpaid = pc.allocations.filter(a => a.type === 'bill' && !allocPaid(a) && bill(a.billId));
   const unpaidSum = unpaid.reduce((s, a) => s + num(a.amount), 0);
-  const pct = pc.amount ? Math.min(100, Math.round(planned / pc.amount * 100)) : 0;
+  const pct = avail > 0 ? Math.min(100, Math.round((planned + out) / avail * 100)) : 0;
+  const from = pc.carryFrom && myPaychecks().find(p => p.id === pc.carryFrom);
+  const to = myPaychecks().filter(p => p.carryFrom === pc.id && num(p.carryOver));
   const lines = pc.allocations.map(a => {
     if (a.type !== 'bill') return `<div class="pcline"><span>🛒 ${esc(a.label || 'Other')}</span><span>${money(a.amount)}</span></div>`;
     const b = bill(a.billId), paid = allocPaid(a);
     return `<div class="pcline ${paid ? 'done' : ''}"><span class="nm">${b ? `<span class="tick" onclick="event.stopPropagation();pcTick('${a.billId}','${a.month}',${num(a.amount)},'${pc.payDate}')">✓</span>` : ''}<span class="nmtxt">${b ? esc(b.name) : '(deleted bill)'}${b ? ` <small class="muted">· due ${fmtDate(dueFromKey(b, a.month))}</small>` : ''}</span></span><span>${money(a.amount)}</span></div>`;
   }).join('');
   return `<div class="card pc ${hl ? 'hl' : ''}" onclick="openPaycheck('${pc.id}')" style="cursor:pointer">
-    <div class="top"><div><div class="small muted">${hl ? 'This week · ' : ''}${fmtDay(pc.payDate)}</div><div class="big2">${money(pc.amount)}</div></div>
+    <div class="top"><div><div class="small muted">${hl ? 'This week · ' : ''}${fmtDay(pc.payDate)}</div><div class="big2">${money(avail)}</div>
+      ${num(pc.carryOver) ? `<div class="small muted">${money(pc.amount)} pay ${pc.carryOver > 0 ? '+ ' + money(pc.carryOver) : '− ' + money(-pc.carryOver)} ${from ? 'from ' + fmtDate(from.payDate) : 'carried over'}</div>` : ''}</div>
     <div class="right"><div class="small muted">Left over</div><div class="big2" style="color:${left < 0 ? 'var(--red)' : 'var(--green)'}">${money(left)}</div></div></div>
     <div class="bar"><i style="width:${pct}%;background:${left < 0 ? 'var(--red)' : 'var(--accent)'}"></i></div>
     <div class="small muted" style="margin:6px 0 4px">${money(planned)} planned${pc.note ? ' · ' + esc(pc.note) : ''}</div>
+    ${to.length ? `<div class="carried-note">↪ ${to.map(p => `${money(p.carryOver)} moved to your ${fmtDate(p.payDate)} check`).join(', ')}</div>` : ''}
     ${lines || '<div class="small muted">Nothing planned yet — tap to pick bills.</div>'}
     ${unpaid.length ? `<button class="btn green block" style="margin-top:10px" onclick="event.stopPropagation();payAllocated('${pc.id}')">Mark ${unpaid.length} bill${unpaid.length > 1 ? 's' : ''} paid · ${money(unpaidSum)}</button>` : ''}
   </div>`;
@@ -1000,10 +1018,11 @@ function pcCandidates() {
     const p = payFor(b.id, o.key);
     if (p && p.status === 'skipped') return;
     const due = o.due, other = plannedOn(b.id, o.key, PC.id);
-    const suggest = !p && !other && ((due >= d && due < next) || (due < d && due >= addDays(d, -31)));
+    const move = !p && other && !other.readOnly && other.payDate < d;   // unpaid bill on an earlier check of yours
+    const suggest = !p && (move || (!other && ((due >= d && due < next) || (due < d && due >= addDays(d, -31)))));
     const near = due >= addDays(d, -10) && due < addDays(d, 35);
     out.push({key: b.id + '|' + o.key, b, m: o.key, due, p, other, suggest, near,
-      label: p ? `<span class="pd" style="color:var(--green)">Paid ${fmtDate(p.paidDate)}</span>` : other ? `on ${pcWho(other)}${fmtDate(other.payDate)} check`
+      label: p ? `<span class="pd" style="color:var(--green)">Paid ${fmtDate(p.paidDate)}</span>` : move ? `<b style="color:var(--accent)">unpaid from ${fmtDate(other.payDate)} check</b>` : other ? `on ${pcWho(other)}${fmtDate(other.payDate)} check`
         : due < t ? '<span style="color:var(--red)">Overdue</span>' : due < next ? '<b>before next payday</b>' : ''});
     });
   }));
@@ -1019,6 +1038,8 @@ function openPaycheck(id) {
     PC.allocations = pcCandidates().filter(c => c.suggest).map(c => ({type: 'bill', billId: c.b.id, month: c.m, amount: c.b.amount}));
     // carry over recurring "other" items (groceries, gas…) from last paycheck
     if (last) last.allocations.filter(a => a.type === 'custom').forEach(a => PC.allocations.push({type: 'custom', label: a.label, amount: a.amount}));
+    const prev = prevPc(), left = prev ? prevLeftFor(prev) : 0;
+    if (left > 0) { PC.carryOver = left; PC.carryFrom = prev.id; PC._carryMode = 'all'; }
   }
   drawPc();
 }
@@ -1039,6 +1060,7 @@ function drawPc() {
       <div><label>Take-home amount</label><input id="pcAmt" type="number" step="0.01" inputmode="decimal" value="${PC.amount || ''}" placeholder="0.00" oninput="syncPc()"></div>
     </div>
     <label>Note</label><input id="pcNote" value="${esc(PC.note)}" placeholder="Optional — e.g. overtime, bonus" oninput="syncPc()">
+    <div id="carryBox">${carryInner()}</div>
     <div class="pcsum" id="pcSum"></div>
     <h3>Bills from this check</h3>
     <div class="small muted">Suggested: anything due ${fmtDate(PC.payDate)} – ${fmtDate(addDays(nextPay, -1))} (before next payday) plus overdue bills.</div>
@@ -1058,6 +1080,67 @@ function drawPc() {
   updatePcSum();
 }
 
+/* ----- Leftover from last week ----- */
+// Your most recent paycheck before this one
+function prevPc() {
+  const d = PC.payDate || todayStr();
+  return myPaychecks().filter(p => p.id !== PC.id && p.payDate < d).sort((a, b) => b.payDate.localeCompare(a.payDate))[0];
+}
+// What's left on last week's check, counting bills that are moving to this check as freed up
+function prevLeftFor(prev) {
+  const keys = new Set(PC.allocations.filter(a => a.type === 'bill').map(a => a.billId + '|' + a.month));
+  const freed = prev.allocations.filter(a => a.type === 'bill' && keys.has(a.billId + '|' + a.month)).reduce((s, a) => s + num(a.amount), 0);
+  return r2(pcTotals(prev, PC.id).left + freed);
+}
+function carryInner() {
+  const prev = prevPc();
+  if (!prev) { PC.carryOver = 0; PC.carryFrom = ''; return ''; }
+  if (PC.carryFrom && PC.carryFrom !== prev.id) { PC.carryOver = 0; PC.carryFrom = ''; }   // pay date changed
+  const left = prevLeftFor(prev), cur = r2(num(PC.carryOver)), when = fmtDay(prev.payDate);
+  const dd = opts => `<div class="selwrap" style="display:block"><select class="formsel carry-sel" onchange="carryPick(this.value)">${opts.map(([v, l, on]) => `<option value="${v}" ${on ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
+  if (left > 0 || cur > 0) {
+    const max = r2(Math.max(left, cur)), half = r2(max / 2);
+    const other = PC._otherCarry || (cur && cur !== max && cur !== half);
+    return `<div class="carry">
+      <div class="carry-top"><span class="carry-ico">💰</span><div><b>You have ${money(max)} left from your ${when} check.</b>
+        <div class="small muted">How much would you like to bring into this week?</div></div></div>
+      ${dd([[max, 'Bring all of it · ' + money(max), !other && cur === max], [half, 'Bring half · ' + money(half), !other && cur === half],
+            ['other', 'Bring a different amount…', other], [0, "Don't bring any", !other && !cur]])}
+      ${other ? `<input id="pcCarry" type="number" step="0.01" inputmode="decimal" style="margin-top:8px" placeholder="Amount to bring" value="${cur || ''}"
+        oninput="PC.carryOver=Math.min(${max},Math.max(0,num(this.value)));PC.carryFrom='${prev.id}';carryNote();updatePcSum()">` : ''}
+      <div class="carry-ok" id="carryOk">${carryOkText(cur, max, prev)}</div>
+    </div>`;
+  }
+  if (left < 0) {
+    return `<div class="carry neg">
+      <div class="carry-top"><span class="carry-ico">⚠️</span><div><b>Your ${when} check came up ${money(-left)} short.</b>
+        <div class="small muted">Want to cover it from this week?</div></div></div>
+      ${dd([[left, 'Cover it from this week · ' + money(-left), cur === left], [0, 'Not now', !cur]])}</div>`;
+  }
+  return '';
+}
+const carryOkText = (cur, max, prev) => cur > 0 ? `✓ Adding ${money(cur)} to this week${cur < max ? ` · ${money(max - cur)} stays with ${fmtDate(prev.payDate)}` : ''}` : cur < 0 ? '' : 'Nothing will be carried over';
+function carryNote() { const prev = prevPc(), el = $('carryOk'); if (prev && el) el.textContent = carryOkText(r2(num(PC.carryOver)), Math.max(prevLeftFor(prev), num(PC.carryOver)), prev); }
+// Remember which option was picked so the amount stays right when bills are checked/unchecked
+function applyCarryMode() {
+  const prev = prevPc(); if (!prev) return;
+  const max = prevLeftFor(prev), m = PC._carryMode;
+  if (m === 'all') PC.carryOver = Math.max(0, max);
+  else if (m === 'half') PC.carryOver = Math.max(0, r2(max / 2));
+  else if (m === 'cover') PC.carryOver = Math.min(0, max);
+  else if (m === 'none') PC.carryOver = 0;
+  else if (num(PC.carryOver) > 0) PC.carryOver = Math.min(num(PC.carryOver), Math.max(0, max));
+  PC.carryFrom = num(PC.carryOver) ? prev.id : '';
+}
+function carryPick(v) {
+  const prev = prevPc(), max = prev ? prevLeftFor(prev) : 0;
+  PC._otherCarry = v === 'other';
+  PC._carryMode = v === 'other' ? 'other' : num(v) === 0 ? 'none' : num(v) < 0 ? 'cover' : num(v) === r2(max) ? 'all' : 'half';
+  if (v !== 'other') applyCarryMode();
+  $('carryBox').innerHTML = carryInner(); updatePcSum();
+  if (v === 'other') $('pcCarry').focus();
+}
+
 function syncPc() {
   if (!$('pcDate')) return;
   PC.payDate = val('pcDate') || todayStr(); PC.amount = num(val('pcAmt')); PC.note = val('pcNote').trim();
@@ -1072,11 +1155,12 @@ function syncPc() {
   });
   const customs = q('[data-cl]').map(el => ({type: 'custom', label: el.value.trim(), amount: num((document.querySelector(`#overlay [data-ca="${el.dataset.cl}"]`) || {}).value)}));
   PC.allocations = bills.concat(customs);
+  if ($('carryBox')) { applyCarryMode(); $('carryBox').innerHTML = carryInner(); }
   updatePcSum();
 }
 function updatePcSum() {
-  const {planned, left} = pcTotals(PC), el = $('pcSum'); if (!el) return;
-  el.innerHTML = `<div class="eq"><div><b>${money(PC.amount)}</b><span>Paycheck</span></div><div><b>− ${money(planned)}</b><span>Planned</span></div>
+  const {planned, avail, left} = pcTotals(PC), el = $('pcSum'); if (!el) return;
+  el.innerHTML = `<div class="eq"><div><b>${money(avail)}</b><span>${num(PC.carryOver) ? 'Pay + carried' : 'Paycheck'}</span></div><div><b>− ${money(planned)}</b><span>Planned</span></div>
     <div><b style="color:${left < 0 ? 'var(--red)' : 'var(--green)'}">${money(left)}</b><span>Left over</span></div></div>
     ${left < 0 ? `<div class="small" style="color:var(--red);text-align:center;margin-top:6px">⚠️ You're short ${money(-left)} — uncheck something or move it to next week.</div>` : ''}`;
 }
@@ -1092,17 +1176,22 @@ function removeCustom(i) {
 function savePc(andPay) {
   syncPc();
   PC.allocations = PC.allocations.filter(a => a.type === 'bill' || a.label || num(a.amount));
+  delete PC._otherCarry; delete PC._carryMode;
   const pc = JSON.parse(JSON.stringify(PC)), recs = andPay ? allocRecs(pc) : [];
+  const keys = new Set(pc.allocations.filter(a => a.type === 'bill').map(a => a.billId + '|' + a.month));
+  const moved = myPaychecks().filter(p => p.id !== pc.id).reduce((n, p) => n + p.allocations.filter(a => a.type === 'bill' && keys.has(a.billId + '|' + a.month)).length, 0);
   const orig = pc.id ? myPaychecks().find(p => p.id === pc.id) : null;
   const removedPaid = orig ? orig.allocations.filter(a => a.type === 'bill' && allocPaid(a) &&
     !pc.allocations.some(x => x.type === 'bill' && x.billId === a.billId && x.month === a.month)) : [];
   closeModal();
   if (removedPaid.length) setTimeout(() => askUnpay(removedPaid), 600);
   mutate('savePaycheck', [pc], () => {
+    myPaychecks().forEach(p => { if (p.id !== pc.id) p.allocations = p.allocations.filter(a => !(a.type === 'bill' && keys.has(a.billId + '|' + a.month))); });
     if (pc.id) S.paychecks = S.paychecks.map(p => p.id === pc.id ? pc : p); else S.paychecks.push(Object.assign({}, pc, {id: 'tmp' + Date.now()}));
   }).then(() => { if (recs.length) return mutate('markPaidBatch', [recs]); });
   const left = pcTotals(pc).left;
-  toast(recs.length ? `✅ Saved · ${recs.length} bill${recs.length > 1 ? 's' : ''} marked paid` : `💵 Saved · ${money(left)} left over`);
+  toast(recs.length ? `✅ Saved · ${recs.length} bill${recs.length > 1 ? 's' : ''} marked paid`
+    : `💵 Saved · ${money(left)} left over` + (num(pc.carryOver) > 0 ? ` (incl. ${money(pc.carryOver)} carried)` : '') + (moved ? ` · moved ${moved} unpaid bill${moved > 1 ? 's' : ''}` : ''));
 }
 function askUnpay(list) {
   const names = list.map(a => esc((bill(a.billId) || {}).name || 'Bill')).join(', ');

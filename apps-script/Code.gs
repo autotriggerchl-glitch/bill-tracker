@@ -25,7 +25,7 @@ const BILL_COLS = ['id', 'name', 'amount', 'dueDay', 'category', 'frequency', 's
   'url', 'notes', 'active', 'owner', 'startDate', 'every', 'unit', 'createdAt'];
 const PAY_COLS = ['id', 'billId', 'month', 'amount', 'paidDate', 'confirmation', 'note', 'status', 'paidBy', 'createdAt'];
 const SET_COLS = ['key', 'value'];
-const PC_COLS = ['id', 'payDate', 'amount', 'note', 'allocations', 'owner', 'createdAt'];
+const PC_COLS = ['id', 'payDate', 'amount', 'note', 'allocations', 'owner', 'carryOver', 'carryFrom', 'createdAt'];
 
 // Shared settings (everyone). Income, email and reminder on/off are per person.
 const DEFAULT_SETTINGS = {
@@ -124,7 +124,7 @@ function getData_(user) {
   const paychecks = read_(PAYCHECKS, PC_COLS).map(pcOut_).map(pc => {
     if (pc.owner === user.id) return pc;
     return {
-      id: pc.id, payDate: pc.payDate, amount: 0, note: '', owner: pc.owner, readOnly: true,
+      id: pc.id, payDate: pc.payDate, amount: 0, carryOver: 0, carryFrom: '', note: '', owner: pc.owner, readOnly: true,
       allocations: pc.allocations.filter(a => a.type === 'bill' && ids.has(a.billId))
         .map(a => ({ type: 'bill', billId: a.billId, month: a.month, amount: 0 }))
     };
@@ -245,13 +245,24 @@ function savePaycheck_(user, pc) {
     if (ex && pcOwner_(ex) !== user.id) throw new Error('That paycheck belongs to someone else');
     const ids = new Set(visibleBills_(user).map(b => b.id));
     const allocations = (pc.allocations || []).filter(a => a.type === 'custom' || ids.has(a.billId));
+    const mine = read_(PAYCHECKS, PC_COLS).filter(r => pcOwner_(r) === user.id);
+    const carryFrom = pc.carryFrom && mine.some(r => r.id === pc.carryFrom && r.id !== pc.id) ? pc.carryFrom : '';
     const rec = {
       id: ex ? ex.id : Utilities.getUuid(),
       payDate: pc.payDate, amount: round_(num_(pc.amount)), note: pc.note || '',
       allocations: JSON.stringify(allocations), owner: user.id,
+      carryOver: carryFrom ? round_(num_(pc.carryOver)) : 0, carryFrom: carryFrom,
       createdAt: ex ? ex.createdAt : new Date().toISOString()
     };
     writeRow_(sh, ex ? ex._row : null, rec);
+    // A bill can only be on one of your paychecks: take these bills off your other checks
+    const here = new Set(allocations.filter(a => a.type === 'bill').map(a => a.billId + '|' + a.month));
+    mine.filter(r => r.id !== rec.id).forEach(r => {
+      let a = [];
+      try { a = JSON.parse(r.allocations || '[]'); } catch (e) { a = []; }
+      const kept = a.filter(x => !(x.type === 'bill' && here.has(x.billId + '|' + x.month)));
+      if (kept.length !== a.length) { r.allocations = JSON.stringify(kept); writeRow_(sh, r._row, r); }
+    });
     return getData_(user);
   });
 }
@@ -777,7 +788,8 @@ function payOut_(o) {
 function pcOut_(o) {
   let a = [];
   try { a = JSON.parse(o.allocations || '[]'); } catch (e) { a = []; }
-  return { id: o.id, payDate: o.payDate, amount: num_(o.amount), note: o.note || '', allocations: a, owner: pcOwner_(o) };
+  return { id: o.id, payDate: o.payDate, amount: num_(o.amount), note: o.note || '', allocations: a, owner: pcOwner_(o),
+    carryOver: num_(o.carryOver), carryFrom: o.carryFrom || '' };
 }
 
 function num_(v) { const n = parseFloat(v); return isNaN(n) ? 0 : n; }
